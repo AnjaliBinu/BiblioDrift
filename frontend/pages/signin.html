@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>BiblioDrift | Sign In</title>
+
+    <!-- Bootstrap -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+
+    <!-- Bootstrap Icons -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+    />
+
+    <!-- Google Fonts -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- External CSS -->
+    <link rel="stylesheet" href="../css/signin.css" />
+  </head>
+
+  <body>
+    <!-- BACK TO HOME -->
+    <a href="index.html" class="back-home-btn">
+      <i class="bi bi-arrow-left"></i>
+      Back to Home
+    </a>
+
+    <div class="container-fluid signin-container">
+      <div class="row signin-wrapper g-0">
+        <!-- ===================================== -->
+        <!-- LEFT PANEL -->
+        <!-- ===================================== -->
+
+        <div class="col-lg-6 left-panel">
+          <!-- Glow -->
+          <div class="glow glow-1"></div>
+          <div class="glow glow-2"></div>
+
+          <div class="left-content">
+            <p class="member-text">MEMBER ACCESS</p>
+
+            <h1 class="main-heading">
+              Sign in to <br />
+              your shelf.
+            </h1>
+
+            <p class="description">
+              Continue your reading journey with personalized recommendations,
+              saved chats, reading streaks, and curated collections synced
+              across devices.
+            </p>
+
+            <!-- Reading Stats -->
+            <div class="stats-wrapper">
+              <div class="stat-box">
+                <h3>12K+</h3>
+                <p>Readers</p>
+              </div>
+
+              <div class="stat-box">
+                <h3>85K+</h3>
+                <p>Books Saved</p>
+              </div>
+
+              <div class="stat-box">
+                <h3>4.9★</h3>
+                <p>User Rating</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- FEATURES -->
+          <div class="features-section">
+            <div class="feature-box">
+              <div class="feature-icon">
+                <i class="bi bi-book-half"></i>
+              </div>
+
+              <div>Continue your latest reading session</div>
+            </div>
+
+            <div class="feature-box">
+              <div class="feature-icon">
+                <i class="bi bi-chat-left-text-fill"></i>
+              </div>
+
+              <div>Resume saved chats & recommendations</div>
+            </div>
+
+            <div class="feature-box">
+              <div class="feature-icon">
+                <i class="bi bi-stars"></i>
+              </div>
+
+              <div>AI-powered personalized book discovery</div>
+            </div>
+
+            <div class="feature-box">
+              <div class="feature-icon">
+                <i class="bi bi-shield-lock-fill"></i>
+              </div>
+
+              <div>Secure encrypted account protection</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================================== -->
+        <!-- RIGHT PANEL -->
+        <!-- ===================================== -->
+
+        <div class="col-lg-6 right-panel">
+          <div class="form-wrapper">
+            <p class="account-text">BIBLIODRIFT ACCOUNT</p>
+
+            <h2 class="welcome-text">Welcome Back</h2>
+
+            <p class="sub-text">Sign in to continue your literary adventure.</p>
+
+            <!-- SUCCESS MESSAGE -->
+            <div class="alert alert-success d-none" id="successMessage">
+              <i class="bi bi-check-circle-fill"></i>
+              Login Successful!
+            </div>
+
+            <!-- ERROR MESSAGE -->
+            <div class="alert alert-danger d-none" id="errorMessage">
+              <i class="bi bi-exclamation-circle-fill"></i>
+              Invalid email or password.
+            </div>
+
+            <!-- SIGN IN FORM -->
+            <form id="signinForm">
+              <!-- EMAIL -->
+              <div class="input-group-custom">
+                <i class="bi bi-envelope input-icon"></i>
+
+                <input
+                  type="email"
+                  id="email"
+                  class="form-control custom-input"
+                  placeholder="Enter your email"
+                  autocomplete="email"
+                />
+
+                <small class="input-error" id="emailError"></small>
+              </div>
+
+              <!-- PASSWORD -->
+              <div class="input-group-custom">
+                <i class="bi bi-lock input-icon"></i>
+
+                <input
+                  type="password"
+                  id="password"
+                  class="form-control custom-input"
+                  placeholder="Enter your password"
+                  autocomplete="current-password"
+                />
+
+                <!-- TOGGLE -->
+                <button
+                  type="button"
+                  class="password-toggle"
+                  onclick="togglePassword()"
+                >
+                  <i class="bi bi-eye-fill" id="toggleIcon"></i>
+                </button>
+
+                <small class="input-error" id="passwordError"></small>
+
+                <!-- CAPS LOCK -->
+                <small class="caps-warning d-none" id="capsWarning">
+                  Caps Lock is ON
+                </small>
+              </div>
+
+              <!-- OPTIONS -->
+              <div class="options-row">
+                <!-- REMEMBER -->
+                <div class="form-check custom-check">
+                  <input
+                    class="form-check-input"
+                    type="checkbox"
+                    id="rememberMe"
+                  />
+
+                  <label class="form-check-label" for="rememberMe">
+                    Remember Me
+                  </label>
+                </div>
+
+                <!-- FORGOT -->
+                <a href="#" class="forgot-link"> Forgot Password? </a>
+              </div>
+
+              <!-- LOGIN BUTTON -->
+              <button type="submit" class="signin-btn" id="signinBtn">
+                <span id="btnText"> Sign In </span>
+
+                <span
+                  class="spinner-border spinner-border-sm d-none"
+                  id="loader"
+                ></span>
+              </button>
+
+              <!-- DIVIDER -->
+              <div class="divider">
+                <span>OR CONTINUE WITH</span>
+              </div>
+
+              <!-- SOCIAL BUTTONS -->
+              <div class="social-buttons">
+                <button type="button" class="social-btn">
+                  <img
+                    src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/google/google-original.svg"
+                    alt=""
+                  />
+                  Google
+                </button>
+
+                <button type="button" class="social-btn">
+                  <i class="bi bi-github"></i>
+                  Github
+                </button>
+
+                <button type="button" class="social-btn">
+                  <i class="bi bi-apple"></i>
+                  Apple
+                </button>
+              </div>
+
+              <!-- GUEST LOGIN -->
+              <button type="button" class="guest-btn">Continue as Guest</button>
+
+              <!-- NEW MEMBER -->
+              <p class="signup-text">
+                New to BiblioDrift?
+                <a href="#"> Create Account </a>
+              </p>
+
+              <!-- TERMS -->
+              <p class="terms-text">
+                By continuing, you agree to our
+                <a href="#">Terms</a>
+                &
+                <a href="#">Privacy Policy</a>
+              </p>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bootstrap -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- ===================================== -->
+    <!-- JAVASCRIPT -->
+    <!-- ===================================== -->
+
+    <script>
+      // =====================================
+      // PASSWORD TOGGLE
+      // =====================================
+
+      function togglePassword() {
+        const password = document.getElementById("password");
+        const toggleIcon = document.getElementById("toggleIcon");
+
+        if (password.type === "password") {
+          password.type = "text";
+
+          toggleIcon.classList.remove("bi-eye-fill");
+          toggleIcon.classList.add("bi-eye-slash-fill");
+        } else {
+          password.type = "password";
+
+          toggleIcon.classList.remove("bi-eye-slash-fill");
+          toggleIcon.classList.add("bi-eye-fill");
+        }
+      }
+
+      // =====================================
+      // CAPS LOCK DETECTION
+      // =====================================
+
+      const passwordInput = document.getElementById("password");
+      const capsWarning = document.getElementById("capsWarning");
+
+      passwordInput.addEventListener("keyup", function (event) {
+        if (event.getModifierState("CapsLock")) {
+          capsWarning.classList.remove("d-none");
+        } else {
+          capsWarning.classList.add("d-none");
+        }
+      });
+
+      // =====================================
+      // FORM VALIDATION
+      // =====================================
+
+      const signinForm = document.getElementById("signinForm");
+
+      signinForm.addEventListener("submit", function (e) {
+        e.preventDefault();
+
+        const email = document.getElementById("email").value.trim();
+        const password = document.getElementById("password").value.trim();
+
+        const emailError = document.getElementById("emailError");
+        const passwordError = document.getElementById("passwordError");
+
+        const errorMessage = document.getElementById("errorMessage");
+        const successMessage = document.getElementById("successMessage");
+
+        const loader = document.getElementById("loader");
+        const btnText = document.getElementById("btnText");
+
+        let valid = true;
+
+        emailError.innerText = "";
+        passwordError.innerText = "";
+
+        errorMessage.classList.add("d-none");
+        successMessage.classList.add("d-none");
+
+        // EMAIL VALIDATION
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (email === "") {
+          emailError.innerText = "Email is required";
+
+          valid = false;
+        } else if (!emailPattern.test(email)) {
+          emailError.innerText = "Enter a valid email address";
+
+          valid = false;
+        }
+
+        // PASSWORD VALIDATION
+        if (password === "") {
+          passwordError.innerText = "Password is required";
+
+          valid = false;
+        } else if (password.length < 6) {
+          passwordError.innerText = "Password must be at least 6 characters";
+
+          valid = false;
+        }
+
+        // STOP IF INVALID
+        if (!valid) {
+          errorMessage.classList.remove("d-none");
+
+          return;
+        }
+
+        // SHOW LOADER
+        loader.classList.remove("d-none");
+
+        btnText.innerText = "Signing In...";
+
+        // FAKE LOGIN
+        setTimeout(() => {
+          loader.classList.add("d-none");
+
+          btnText.innerText = "Sign In";
+
+          successMessage.classList.remove("d-none");
+
+          signinForm.reset();
+        }, 2000);
+      });
+
+      // =====================================
+      // REMEMBER EMAIL
+      // =====================================
+
+      window.onload = function () {
+        const savedEmail = localStorage.getItem("rememberedEmail");
+
+        if (savedEmail) {
+          document.getElementById("email").value = savedEmail;
+
+          document.getElementById("rememberMe").checked = true;
+        }
+      };
+
+      document
+        .getElementById("rememberMe")
+        .addEventListener("change", function () {
+          const email = document.getElementById("email").value;
+
+          if (this.checked) {
+            localStorage.setItem("rememberedEmail", email);
+          } else {
+            localStorage.removeItem("rememberedEmail");
+          }
+        });
+    </script>
+  </body>
+</html>
