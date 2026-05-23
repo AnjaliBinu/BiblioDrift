@@ -48,43 +48,48 @@
 
 <body class="library-page">
 
-    <header>
-        <a href="index.html" class="logo">
-            <img style="height: 40px" src="../assets/images/biblioDrift_favicon.png" alt="BiblioDrift Logo"> BiblioDrift
-        </a>
-        <div class="header-controls">
-            <div class="search-bar">
-                <input type="text" id="searchInput" class="search-input" placeholder="Search for a feeling...">
-                <i class="fa-solid fa-search search-icon" id="searchIcon"></i>
-            </div>
-            <nav class="nav-links">
-                <div class="tooltip">
-                    <a href="index.html">Discovery</a>
-                    <span class="tooltip-text"><i class="fa-solid fa-wand-magic-sparkles"></i> Explore books</span>
-                </div>
-                <div class="tooltip">
-                    <a href="vault.html">My Vault</a>
-                    <span class="tooltip-text"><i class="fa-solid fa-vault"></i> My Vault</span>
-                </div>
-                <div class="tooltip">
-                    <a href="library.html" class="active">My Library</a>
-                    <span class="tooltip-text"><i class="fa-solid fa-book"></i> My Library</span>
-                </div>
-                <div class="tooltip">
-                    <a href="chat.html">Chat</a>
-                    <span class="tooltip-text"><i class="fa-solid fa-comments"></i> Chat</span>
-                </div>
-                <!-- DYNAMIC AUTH LINK -->
-                <div class="tooltip">
-                    <a href="auth.html" id="navAuthLink">Sign In</a>
-                    <span class="tooltip-text" id="navAuthTooltip"><i class="fa-solid fa-key"></i> Access account</span>
-                </div>
-            </nav>
-            <button id="themeToggle" class="btn-icon" title="Toggle Theme">
-                <i class="fa-solid fa-moon"></i>
-            </button>
+      <header>
+    <a href="app.html" class="logo">
+      <img style="height: 40px" src="../assets/images/biblioDrift_favicon.png" alt="BiblioDrift Logo"> BiblioDrift
+    </a>
+    <div class="header-controls">
+      <div class="search-bar">
+        <input type="text" id="searchInput" class="search-input" placeholder="Search for a feeling...">
+        <i class="fa-solid fa-search search-icon" id="searchIcon"></i>
+      </div>
+      <nav class="nav-links">
+        <div class="tooltip">
+          <a href="app.html" >Discovery</a>
+          <span class="tooltip-text"><i class="fa-solid fa-wand-magic-sparkles"></i> Explore books</span>
         </div>
-    </header>
+        <div class="tooltip">
+          <a href="vault.html" >My Vault</a>
+          <span class="tooltip-text"><i class="fa-solid fa-vault"></i> My Vault</span>
+        </div>
+        <div class="tooltip">
+          <a href="library.html" class="active">My Library</a>
+          <span class="tooltip-text"><i class="fa-solid fa-book"></i> My Library</span>
+        </div>
+        <div class="tooltip">
+           <a href="community-stories.html">Community</a>
+           <span class="tooltip-text"><i class="fa-solid fa-pen-nib"></i> Community Stories</span>
+        </div>
+
+        <div class="tooltip">
+          <a href="chat.html" >Chat</a>
+          <span class="tooltip-text"><i class="fa-solid fa-comments"></i> Chat</span>
+        </div>
+        <!-- DYNAMIC AUTH LINK -->
+        <div class="tooltip">
+          <a href="auth.html" id="navAuthLink" >Sign In</a>
+          <span class="tooltip-text" id="navAuthTooltip"><i class="fa-solid fa-key"></i> Access account</span>
+        </div>
+      </nav>
+      <button id="themeToggle" class="btn-icon" title="Toggle Theme">
+        <i class="fa-solid fa-moon"></i>
+      </button>
+    </div>
+  </header>
 
     <main>
         <section class="hero library-hero">
@@ -183,7 +188,7 @@
                 </div>
                 
                 <!-- Call to Action -->
-                <a href="index.html" class="btn-primary library-empty-link">
+                <a href="app.html" class="btn-primary library-empty-link">
                     <i class="fa-solid fa-wand-magic-sparkles"></i> Discover Books
                 </a>
             </div>
