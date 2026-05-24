@@ -1,34 +1,48 @@
 # Flask backend application with GoodReads mood analysis integration
 # Initialize Flask app, configure CORS, and setup mood analysis endpoints
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required, 
     get_jwt_identity, set_access_cookies, unset_jwt_cookies
 )
 from flask_limiter import Limiter
+from flask_limiter.errors import RateLimitExceeded
 from flask_limiter.util import get_remote_address
 from sqlalchemy.orm import joinedload
 from flask_migrate import Migrate
 from flask_wtf.csrf import CSRFProtect, generate_csrf, CSRFError
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
-from backend.spine_generator import create_spine
+from spine_generator import create_spine
 import os
 import requests
+import secrets
+from urllib.parse import urlencode
 
 import logging
 from datetime import datetime, timedelta, timezone
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from sanitizer import sanitize_payload
-from reader_identity.routes import reader_identity_bp
+from backend.sanitizer import sanitize_payload
+from backend.reader_identity.routes import reader_identity_bp
+
+# Load environment variables from config directory based on APP_ENV
+env = os.getenv('APP_ENV', 'development')
+env_path = os.path.join(os.path.dirname(__file__), '..', 'config', f'.env.{env}')
+backend_env_path = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+elif os.path.exists(backend_env_path):
+    load_dotenv(backend_env_path)
+else:
+    load_dotenv()
 
 # Environment variables are now loaded centrally in backend/config.py
 from config import app_config, setup_logging, validate_required_env_vars
-from ai_service import generate_book_note, get_ai_recommendations, get_category_books, get_book_mood_tags_safe, generate_chat_response, llm_service
+from ai_service import generate_book_note, get_ai_recommendations, get_category_books, get_book_mood_tags_safe, generate_chat_response, llm_service, get_vibe_recommendations
 from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, Collection, CollectionItem, PriceHistory, PriceAlert, Review, register_user, login_user
 from price_tracker import get_price_tracker
 from cache_service import cache_service
@@ -46,6 +60,8 @@ from validators import (
     SyncLibraryRequest,
     RegisterRequest,
     LoginRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
     SetGoalRequest,
     GetStatsRequest,
     CollectionRequest,
@@ -59,9 +75,15 @@ from validators import (
     validate_jwt_secret,
     is_production_mode
 )
+from password_reset_service import (
+    FORGOT_PASSWORD_MESSAGE,
+    request_password_reset,
+    reset_password_with_token,
+)
 from collections import defaultdict, deque
 from math import ceil
 from time import time
+from urllib.parse import quote
 from error_responses import (
     ErrorCodes, error_response, success_response,
     validation_error, missing_fields_error, invalid_json_error,
@@ -130,6 +152,56 @@ csrf = CSRFProtect(app)
 # Initialize JWT Manager
 jwt = JWTManager(app)
 
+DEFAULT_CORS_ORIGINS = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "http://127.0.0.1:5501",
+    "http://localhost:5501",
+    "http://127.0.0.1:5000",
+    "http://localhost:5000",
+]
+ALLOWED_CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+ALLOWED_CORS_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "X-CSRF-TOKEN",
+    "X-CSRF-Token",
+    "X-Requested-With",
+    "Accept",
+]
+
+def _load_cors_origins() -> list[str]:
+    """Load an explicit CORS allowlist from the environment or defaults."""
+    raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+    if raw_origins.strip():
+        return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    return DEFAULT_CORS_ORIGINS
+
+def _apply_security_headers(response):
+    """Apply hardening headers to every API response."""
+    csp_policy = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google.com; "
+        "style-src 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
+        "connect-src 'self' https: ws: wss:; "
+        "frame-src 'self' https://books.google.com https://www.google.com; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'; "
+        "upgrade-insecure-requests"
+    )
+
+    response.headers['Content-Security-Policy'] = csp_policy
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+    response.headers['X-Frame-Options'] = 'DENY'
+    return response
+
 # =====================================================================
 # SECURITY COMPLIANCE UPDATE: CORS CONFIGURATION
 # The previous CORS(app) was overly permissive and allowed all origins.
@@ -140,11 +212,52 @@ jwt = JWTManager(app)
 # optionally load allowed origins from environment variables.
 # =====================================================================
 # ALLOWED_ORIGINS=http://127.0.0.1:5500,http://localhost:5500,http://127.0.0.1:5000,http://localhost:5000
-# For development, we'll allow all to be safe, then restrict in prod
-CORS(app, supports_credentials=True, origins=["http://127.0.0.1:5500", "http://localhost:5500", "http://127.0.0.1:5000", "http://localhost:5000"])
+# For development, we keep a strict explicit allowlist and never use '*'
+_cors_origins = _load_cors_origins()
+CORS(
+    app,
+    supports_credentials=True,
+    origins=_cors_origins,
+    methods=ALLOWED_CORS_METHODS,
+    allow_headers=ALLOWED_CORS_HEADERS,
+    expose_headers=['Retry-After'],
+    resources={r"/api/*": {"origins": _cors_origins}},
+)
 
 # Initialize cache service
 cache_service.init_app(app)
+
+
+def _resolve_rate_limit_principal() -> str:
+    """Resolve a stable principal for per-user/session throttling."""
+    try:
+        user_id = get_jwt_identity()
+        if user_id:
+            return f"user:{user_id}"
+    except Exception:
+        # JWT may be absent on public endpoints.
+        pass
+
+    session_hint = (
+        request.cookies.get("access_token_cookie")
+        or request.cookies.get("csrf_access_token")
+        or request.cookies.get("session")
+    )
+    if session_hint:
+        return f"session:{session_hint[:24]}"
+
+    return "anon"
+
+
+def rate_limit_key_func() -> str:
+    """Composite key: IP + principal + endpoint."""
+    endpoint = request.endpoint or request.path
+    return f"{get_remote_address()}|{_resolve_rate_limit_principal()}|{endpoint}"
+
+
+def _handle_rate_limit_exceeded(e: RateLimitExceeded):
+    retry_after = int(getattr(e, "retry_after", 1) or 1)
+    return rate_limit_error(retry_after)
 
 # =====================================================================
 # SECURITY COMPLIANCE UPDATE: RATE LIMITING
@@ -155,17 +268,309 @@ cache_service.init_app(app)
 # We set generic defaults but override them on specific high-risk routes.
 # =====================================================================
 limiter = Limiter(
-    get_remote_address,
+    rate_limit_key_func,
     app=app,
     default_limits=["200 per day", "50 per hour"],
     storage_uri="memory://"
 )
+app.register_error_handler(RateLimitExceeded, _handle_rate_limit_exceeded)
+
+
+
+
 
 @app.errorhandler(404)
 def page_not_found(e: Exception):
     if request.path.startswith('/api/'):
         return error_response(ErrorCodes.ENDPOINT_NOT_FOUND, "Endpoint not found", 404)
     return app.send_static_file('404.html'), 404
+
+# =========================================================================
+# GLOBAL EXCEPTION HANDLER (SECURITY & COMPLIANCE UPDATE)
+# =========================================================================
+# The following global exception handler is designed to catch all unhandled
+# exceptions that bubble up to the Flask application level. 
+# 
+# WHY THIS MATTERS (SECURITY & COMPLIANCE):
+# 1. Information Leakage Prevention: In default Flask configurations, unhandled
+#    exceptions can result in raw stack traces being returned to the client in
+#    the HTTP 500 response. These stack traces often expose sensitive internal
+#    application logic, directory structures, third-party library versions, 
+#    and potentially database schema details. Attackers can use this information
+#    to craft targeted exploits against the application infrastructure.
+# 2. Consistent API Responses: By catching all exceptions globally, we ensure
+#    that clients always receive a well-structured JSON response, even when 
+#    catastrophic failures occur. This improves client-side error handling and
+#    overall system reliability.
+# 3. Centralized Auditing: This handler serves as a single choke point for
+#    logging critical failures. All unhandled exceptions are logged with full
+#    tracebacks internally, ensuring that developers have the information needed
+#    to debug issues without exposing that information to the end user.
+# 4. Production vs. Development: In production environments, generic error
+#    messages are returned to obscure system details. In development environments
+#    (as determined by app_config), more detailed error information may be
+#    included to assist in local debugging.
+# 5. Incident Response Facilitation: By assigning a unique Error Reference ID
+#    to each occurrence, customer support and engineering teams can easily
+#    correlate a user's reported problem with the specific log entry containing
+#    the full stack trace and request context.
+#
+# ANATOMY OF A SECURE ERROR RESPONSE:
+# - error: A generic string like "Internal Server Error"
+# - error_code: A consistent, machine-readable string like "INTERNAL_ERROR"
+# - reference_id: A UUID string like "a1b2c3d4-..."
+# - timestamp: ISO 8601 formatted timestamp of the occurrence
+#
+# WHAT IS EXCLUDED FROM THE RESPONSE:
+# - Raw stack traces (traceback module output)
+# - Exception messages (str(e)) which might contain SQL query fragments
+# - Local variable states
+# - System paths (e.g., /var/www/app/backend/...)
+# - Dependency versions
+#
+# EXCEPTION HANDLING STRATEGY:
+# - Step 1: Intercept the exception.
+# - Step 2: Determine if it's a known HTTP exception (e.g., 404, 405). If so,
+#   let it proceed or format it appropriately.
+# - Step 3: Generate a unique error reference ID (UUID).
+# - Step 4: Extract request context (method, URL, headers - excluding auth).
+# - Step 5: Log the full traceback, request context, and the reference ID at
+#   the ERROR or CRITICAL level.
+# - Step 6: Construct the safe, generic JSON response.
+# - Step 7: Return the response with a 500 status code.
+# =========================================================================
+
+from werkzeug.exceptions import HTTPException
+import traceback
+import uuid
+import json
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    """
+    Global catch-all exception handler to prevent stack trace leakage and 
+    ensure uniform error responses across the entire application API.
+    
+    Args:
+        e (Exception): The unhandled exception instance caught by Flask.
+        
+    Returns:
+        tuple: A Flask JSON response object and an HTTP status code.
+    """
+    
+    # 1. Handle HTTP Exceptions Normally
+    # If the exception is an intentional HTTP error (e.g., abort(404)),
+    # we should return its intended status code and message, assuming it's
+    # already formatted safely.
+    if isinstance(e, HTTPException):
+        # We can safely return the description of HTTP exceptions
+        logger.warning(
+            f"HTTP Exception encountered: {e.code} {e.name} - {e.description} "
+            f"| Path: {request.path}"
+        )
+        return jsonify({
+            "success": False,
+            "error_code": "HTTP_EXCEPTION",
+            "error": e.description,
+            "status_code": e.code
+        }), e.code
+
+    # 2. Database Session Cleanup
+    # If the exception occurred during a database transaction, the session
+    # might be left in an invalid state. We must roll it back to prevent
+    # subsequent requests in the same thread from failing.
+    try:
+        from sqlalchemy.exc import SQLAlchemyError
+        if isinstance(e, SQLAlchemyError):
+            db.session.rollback()
+            logger.error("Rolled back database session due to SQLAlchemyError in global handler.")
+    except ImportError:
+        pass
+    except Exception as db_rollback_error:
+        # Failsafe: If rollback itself fails, we log it but don't crash the handler
+        logger.critical(f"Failed to rollback DB session: {db_rollback_error}")
+
+    # 3. Generate Error Reference ID
+    # This UUID will be returned to the client so they can provide it to support.
+    # It will also be logged alongside the stack trace.
+    error_reference_id = str(uuid.uuid4())
+    
+    # 4. Extract Safe Request Context
+    # We want to log what the user was trying to do, but we MUST NOT log
+    # sensitive information like passwords, tokens, or full credit card numbers.
+    request_method = request.method
+    request_url = request.url
+    client_ip = request.remote_addr
+    
+    # Safely extract headers (excluding Authorization and Cookies)
+    safe_headers = {}
+    for key, value in request.headers.items():
+        if key.lower() not in ['authorization', 'cookie', 'x-api-key']:
+            safe_headers[key] = value
+            
+    # Safely extract query parameters
+    query_params = dict(request.args)
+    
+    # 5. Structure the Log Payload
+    # Create a detailed dictionary for logging purposes
+    log_payload = {
+        "error_reference_id": error_reference_id,
+        "exception_type": type(e).__name__,
+        "exception_message": str(e),
+        "request": {
+            "method": request_method,
+            "url": request_url,
+            "client_ip": client_ip,
+            "headers": safe_headers,
+            "query_parameters": query_params
+        }
+    }
+    
+    # 6. Log the Exception
+    # We use logger.error with exc_info=True to automatically append the
+    # full stack trace to the log entry. This is critical for debugging.
+    # We prefix the log message with the reference ID for easy searching.
+    logger.error(
+        f"[ERROR REF: {error_reference_id}] Unhandled Exception: {type(e).__name__} "
+        f"at {request_method} {request_url}\n"
+        f"Details: {json.dumps(log_payload, indent=2)}",
+        exc_info=True
+    )
+    
+    # 7. Determine Response Content based on Environment
+    # In development, we MIGHT want to return the stack trace for convenience.
+    # In production, we MUST return a generic message.
+    
+    # Check if we are in production mode using the imported is_production_mode helper
+    # or the app_config object.
+    is_prod = True
+    try:
+        if hasattr(app_config, 'is_production'):
+            is_prod = app_config.is_production()
+        elif hasattr(app_config, 'flask_config'):
+            is_prod = app_config.flask_config.get('ENV') == 'production'
+    except Exception:
+        # Default to secure production behavior if config check fails
+        is_prod = True
+        
+    # Construct the base response
+    response_data = {
+        "success": False,
+        "error_code": "INTERNAL_SERVER_ERROR",
+        "error": "An unexpected internal server error occurred.",
+        "message": "Our team has been notified. Please try again later.",
+        "reference_id": error_reference_id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # If explicitly NOT in production, we can append debug info
+    if not is_prod:
+        response_data["_debug"] = {
+            "exception": type(e).__name__,
+            "message": str(e),
+            "traceback": traceback.format_exc().splitlines()
+        }
+        logger.warning(
+            f"[ERROR REF: {error_reference_id}] Returning detailed error response "
+            f"because environment is NOT production."
+        )
+    else:
+        logger.info(
+            f"[ERROR REF: {error_reference_id}] Returning generic secure error response "
+            f"because environment is production."
+        )
+        
+    # 8. Return the Secure JSON Response
+    # Always return a 500 Internal Server Error status code for unhandled exceptions.
+    response = jsonify(response_data)
+    
+    # Adding security headers to error responses as defense in depth
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    
+    return response, 500
+
+# =========================================================================
+# DATABASE EXCEPTION HANDLER (SECURITY & COMPLIANCE UPDATE)
+# =========================================================================
+# Why a separate handler for database errors?
+# Database errors (like IntegrityError, OperationalError) often contain
+# raw SQL queries, table names, or constraint names in their string
+# representations. Exposing these details is a severe security risk 
+# (Information Exposure).
+# 
+# This handler intercepts all exceptions deriving from SQLAlchemyError,
+# securely logs the full details (including the potentially sensitive query),
+# and returns a highly sanitized, generic error to the client.
+# 
+# Key Actions:
+# 1. Rolls back the active database session to prevent bad state.
+# 2. Generates a unique tracking ID.
+# 3. Logs the raw error internally.
+# 4. Returns a safe "Database Operation Failed" message.
+# =========================================================================
+from sqlalchemy.exc import SQLAlchemyError
+
+@app.errorhandler(SQLAlchemyError)
+def handle_sqlalchemy_exception(e):
+    """
+    Dedicated handler for database-related exceptions to prevent SQL injection
+    reconnaissance and schema leakage.
+    """
+    # 1. Ensure the session is rolled back safely
+    try:
+        db.session.rollback()
+    except Exception as rollback_err:
+        logger.critical(f"Failed to rollback DB session during SQLAlchemyError handling: {rollback_err}")
+        
+    # 2. Generate Tracking ID
+    error_reference_id = str(uuid.uuid4())
+    
+    # 3. Secure Internal Logging
+    # We log the full error (which may contain SQL) but ONLY internally.
+    logger.error(
+        f"[DB ERROR REF: {error_reference_id}] Database Exception: {type(e).__name__} "
+        f"at {request.method} {request.path}\n"
+        f"Message: {str(e)}",
+        exc_info=True
+    )
+    
+    # 4. Safe External Response
+    response_data = {
+        "success": False,
+        "error_code": "DATABASE_ERROR",
+        "error": "A database operation failed.",
+        "message": "The issue has been logged and our team is investigating.",
+        "reference_id": error_reference_id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # In non-production, we might want to see the error, but even then
+    # we should be careful. We'll only expose the type, not the full SQL.
+    is_prod = True
+    try:
+        if hasattr(app_config, 'is_production'):
+            is_prod = app_config.is_production()
+        elif hasattr(app_config, 'flask_config'):
+            is_prod = app_config.flask_config.get('ENV') == 'production'
+    except Exception:
+        is_prod = True
+        
+    if not is_prod:
+        response_data["_debug"] = {
+            "exception": type(e).__name__,
+            "message": "Database error details are suppressed for security, see logs.",
+            "traceback": traceback.format_exc().splitlines()
+        }
+        
+    response = jsonify(response_data)
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    return response, 500
+
+# =========================================================================
+# END OF GLOBAL EXCEPTION HANDLERS
+# =========================================================================
 
 
 @app.errorhandler(CSRFError)
@@ -211,35 +616,7 @@ def add_security_headers(response):
     Returns:
         response: Response with added security headers
     """
-    csp_policy = (
-        "default-src 'self'; "
-        "script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
-        "style-src 'self' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
-        "img-src 'self' data: blob: https:; "
-        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
-        "connect-src 'self' ws: wss: https:; "
-        "frame-ancestors 'none'; "
-        "base-uri 'self'; "
-        "form-action 'self'; "
-        "upgrade-insecure-requests"
-    )
-    response.headers['Content-Security-Policy'] = csp_policy
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy'] = (
-        'geolocation=(), '
-        'microphone=(), '
-        'camera=(), '
-        'payment=(), '
-        'usb=(), '
-        'magnetometer=(), '
-        'gyroscope=(), '
-        'accelerometer=()'
-    )
-    return response
+    return _apply_security_headers(response)
 
 # Rate limiting configuration
 RATE_LIMIT_WINDOW = int(os.getenv('RATE_LIMIT_WINDOW', '60'))
@@ -417,7 +794,7 @@ def index():
     return jsonify(endpoints_info)
 
 @app.route('/api/v1/analyze-mood', methods=['POST'])
-@rate_limit('analyze_mood')
+@limiter.limit("10 per minute")
 def handle_analyze_mood():
     """Analyze book mood using GoodReads reviews."""
     if not MOOD_ANALYSIS_AVAILABLE:
@@ -445,7 +822,7 @@ def handle_analyze_mood():
         return internal_error(str(e))
 
 @app.route('/api/v1/mood-tags', methods=['POST'])
-@rate_limit('mood_tags')
+@limiter.limit("10 per minute")
 def handle_mood_tags():
     """Get mood tags for a book."""
     from exceptions import (
@@ -480,7 +857,7 @@ def handle_mood_tags():
         return handle_exception(e, "handle_mood_tags")
 
 @app.route('/api/v1/mood-search', methods=['POST'])
-@rate_limit('mood_search')
+@limiter.limit("10 per minute")
 def handle_mood_search():
     """Search for books based on mood/vibe with improved query parsing."""
     from exceptions import (
@@ -535,8 +912,47 @@ def handle_mood_search():
         return internal_error(str(e))
 
 
+@app.route('/api/v1/vibe-check', methods=['POST'])
+@rate_limit('vibe_check')
+def handle_vibe_check():
+    """
+    Generate hyper-personalized book recommendations based on a specific vibe.
+    """
+    try:
+        data = request.get_json()
+
+        # Safely validate input
+        if not data or 'vibe_prompt' not in data:
+            return missing_fields_error(["vibe_prompt"])
+
+        vibe_prompt = data['vibe_prompt']
+        count = data.get('count', 3)
+
+        # Call the Gemini pipeline
+        books = get_vibe_recommendations(
+            vibe_prompt=vibe_prompt,
+            count=count
+        )
+
+        if not books:
+            return service_unavailable_error(
+                "Could not generate vibe recommendations right now. Please try again shortly."
+            )
+
+        return success_response(
+            data={
+                "vibe_prompt": vibe_prompt,
+                "books": books,
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error in handle_vibe_check: {str(e)}", exc_info=True)
+        return internal_error(str(e))
+
+
 @app.route('/api/v1/category-books', methods=['POST'])
-@rate_limit('category_books')
+@limiter.limit("10 per minute")
 def handle_category_books():
     """
     Return AI-generated, category-specific book recommendations.
@@ -600,8 +1016,32 @@ def handle_category_books():
         logger.error(f"Error in handle_category_books: {str(e)}", exc_info=True)
         return internal_error(str(e))
 
+
+@app.route('/api/v1/books/purchase-links', methods=['GET'])
+@limiter.limit("20 per minute")
+def handle_purchase_links():
+    """Get purchase links for a book."""
+    try:
+        title = request.args.get('title')
+        author = request.args.get('author', '')
+        isbn = request.args.get('isbn', '')
+        
+        if not title:
+            return jsonify({'success': False, 'error': 'Title is required'}), 400
+            
+        from purchase_links import PurchaseManager
+        manager = PurchaseManager()
+        
+        links = manager.get_quick_links(title=title, author=author, isbn=isbn)
+        
+        return success_response(data={"links": links})
+        
+    except Exception as e:
+        logger.error(f"Error getting purchase links: {str(e)}", exc_info=True)
+        return internal_error(str(e))
+
 @app.route('/api/v1/generate-note', methods=['POST'])
-@rate_limit('generate_note')
+@limiter.limit("10 per minute")
 def handle_generate_note():
     """Generate AI-powered book recommendation with vibe support."""
     from exceptions import (
@@ -658,7 +1098,7 @@ def handle_generate_note():
         return handle_exception(e, "handle_generate_note")
 
 @app.route('/api/v1/chat', methods=['POST'])
-@rate_limit('chat')
+@limiter.limit("10 per minute")
 def handle_chat():
     """Handle chat messages and generate bookseller responses."""
     from exceptions import (
@@ -752,6 +1192,7 @@ def health_check():
 #    attributes like shelf type and read progress.
 # =========================================================================
 @app.route('/api/v1/library', methods=['POST'])
+@limiter.limit("20 per minute")
 @jwt_required()
 def add_to_library():
     """Add a book to the user's shelf."""
@@ -879,34 +1320,45 @@ def _update_reading_stats(user_id, book):
 
 
 def _calculate_reading_streak(user_id):
-    """Calculate the user's current reading streak in days."""
+    """Calculate the user's current reading streak in days.
+
+    Multiple books finished on the same calendar day count as a single
+    streak day, fixing the bug reported in issue #513.
+    """
     finished_items = ShelfItem.query.filter_by(
         user_id=user_id, shelf_type='finished'
     ).filter(ShelfItem.finished_at.isnot(None)).order_by(ShelfItem.finished_at.desc()).all()
-    
+
     if not finished_items:
         return 0
-    
+
+    # Deduplicate dates so two books on the same day count as one streak day.
+    # Without this, days_diff == 0 silently skips and corrupts prev_date,
+    # causing the next iteration to see a false gap and break early.
+    unique_dates = sorted(
+        {item.finished_at.date() for item in finished_items},
+        reverse=True,
+    )
+
     now = datetime.now(timezone.utc)
     today = now.date()
-    most_recent = finished_items[0].finished_at.date()
-    
+    most_recent = unique_dates[0]
+
     if (today - most_recent).days > 1:
         return 0
-    
+
     streak = 1
     prev_date = most_recent
-    
-    for item in finished_items[1:]:
-        finish_date = item.finished_at.date()
+
+    for finish_date in unique_dates[1:]:
         days_diff = (prev_date - finish_date).days
-        
+
         if days_diff == 1:
             streak += 1
             prev_date = finish_date
-        elif days_diff > 1:
+        else:
             break
-    
+
     return streak
 
 
@@ -1016,6 +1468,7 @@ price_tracker = get_price_tracker(db)
 #    the client when the server's record is strictly newer.
 # =========================================================================
 @app.route('/api/v1/library/sync', methods=['POST'])
+@limiter.limit("20 per minute")
 @jwt_required()
 def sync_library():
     """Sync a list of books from local storage to the user's account."""
@@ -1033,8 +1486,11 @@ def sync_library():
         if str(user_id) != str(current_user_id):
             return forbidden_error("Cannot sync to another user's library")
 
+        # NOTE: validated_data.items is List[Dict[str, Any]] per SyncLibraryRequest validator.
+        # Each item_data is a raw dictionary (not a Pydantic model), so .get() and isinstance()
+        # checks are safe. Sanitization happens after ID validation to prevent XSS in valid books.
         invalid_ids = []
-        for index, item_data in enumerate(raw_items):
+        for index, item_data in enumerate(validated_data.items):
             if not isinstance(item_data, dict):
                 continue
             raw_google_id = item_data.get('id')
@@ -1050,7 +1506,7 @@ def sync_library():
             return validation_error("Invalid Google Books ID format in sync payload")
 
         # Sanitize the items list only after validating Google Books IDs.
-        items = sanitize_payload(raw_items)
+        items = sanitize_payload(validated_data.items)
         
         synced_count = 0
         conflicts = 0
@@ -1143,7 +1599,7 @@ def sync_library():
 # immediately responds with an active session ready to go.
 # =========================================================================
 @app.route('/api/v1/register', methods=['POST'])
-@limiter.limit("5 per minute")
+@limiter.limit("5 per 10 seconds")
 def register():
     """Register a new user and return JWT token."""
     try:
@@ -1192,8 +1648,9 @@ def register():
         logger.error(f"Unexpected error in register endpoint: {e}")
         return internal_error(str(e))
 
+
 @app.route('/api/v1/login', methods=['POST'])
-@limiter.limit("5 per minute")
+@limiter.limit("5 per 10 seconds")
 def login():
     """Authenticate user and return JWT token."""
     from exceptions import DatabaseQueryError, ValidationException
@@ -1231,11 +1688,161 @@ def login():
             )
             set_access_cookies(resp, access_token)
             return resp, status
+
+        if user and not user.password_hash:
+            return auth_error("This account uses Google sign-in. Please continue with Google.")
             
         return auth_error("Invalid username or password")
     except Exception as e:
         logger.error(f"Unexpected error in login: {type(e).__name__}: {e}", exc_info=True)
         return handle_exception(e, "login")
+
+
+@app.route('/api/v1/auth/google', methods=['GET'])
+@limiter.limit("10 per minute")
+def google_login():
+    google_client_id = app.config.get('GOOGLE_CLIENT_ID')
+    google_redirect_uri = app.config.get('GOOGLE_OAUTH_REDIRECT_URI') or url_for('google_oauth_callback', _external=True)
+    google_scope = app.config.get('GOOGLE_OAUTH_SCOPE', 'openid email profile https://www.googleapis.com/auth/books')
+
+    if not google_client_id:
+        return internal_error("Google OAuth client ID is not configured.")
+
+    oauth_state = secrets.token_urlsafe(32)
+    params = {
+        'client_id': google_client_id,
+        'redirect_uri': google_redirect_uri,
+        'response_type': 'code',
+        'scope': google_scope,
+        'state': oauth_state,
+        'access_type': 'offline',
+        'prompt': 'select_account'
+    }
+
+    response = redirect(f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}")
+    response.set_cookie(
+        'google_oauth_state',
+        oauth_state,
+        httponly=True,
+        secure=app_config.is_production(),
+        samesite='Lax',
+        max_age=600
+    )
+    return response
+
+
+@app.route('/api/v1/auth/google/callback', methods=['GET'])
+@limiter.limit("10 per minute")
+def google_oauth_callback():
+    code = request.args.get('code')
+    state = request.args.get('state')
+    stored_state = request.cookies.get('google_oauth_state')
+    google_client_id = app.config.get('GOOGLE_CLIENT_ID')
+    google_client_secret = app.config.get('GOOGLE_CLIENT_SECRET')
+    google_redirect_uri = app.config.get('GOOGLE_OAUTH_REDIRECT_URI') or url_for('google_oauth_callback', _external=True)
+    frontend_redirect_url = app.config.get('GOOGLE_OAUTH_FRONTEND_REDIRECT_URL', 'http://127.0.0.1:5500/frontend/pages/library.html')
+    
+
+    if not code:
+        return auth_error("Google OAuth authorization code is missing.")
+
+    if not stored_state or not state or stored_state != state:
+        return auth_error("Invalid Google OAuth state.")
+
+    if not google_client_id or not google_client_secret:
+        return internal_error("Google OAuth client credentials are not configured.")
+
+    try:
+        token_response = requests.post(
+            'https://oauth2.googleapis.com/token',
+            data={
+                'code': code,
+                'client_id': google_client_id,
+                'client_secret': google_client_secret,
+                'redirect_uri': google_redirect_uri,
+                'grant_type': 'authorization_code'
+            },
+            timeout=10
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = token_data.get('access_token')
+
+        if not access_token:
+            return auth_error("Google OAuth access token is missing.")
+
+        userinfo_response = requests.get(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=10
+        )
+        userinfo_response.raise_for_status()
+        google_user = userinfo_response.json()
+
+        google_id = google_user.get('sub')
+        email = google_user.get('email')
+        username = google_user.get('name') or (email.split('@')[0] if email else None)
+
+        if not google_id or not email or not username:
+            return auth_error("Google account did not provide required profile information.")
+
+        user = User.query.filter_by(google_id=google_id).first()
+        if not user:
+            user = User.query.filter_by(email=email).first()
+            if user:
+                user.google_id = google_id
+                user.auth_provider = 'google'
+                user.profile_picture = google_user.get('picture')
+                user.email_verified = bool(google_user.get('email_verified'))
+            else:
+                base_username = ''.join(ch for ch in username.strip().replace(' ', '_') if ch.isalnum() or ch == '_')[:50]
+                if len(base_username) < 3:
+                    base_username = email.split('@')[0][:50]
+
+                unique_username = base_username
+                suffix = 1
+                while User.query.filter_by(username=unique_username).first():
+                    suffix_text = str(suffix)
+                    unique_username = f"{base_username[:50 - len(suffix_text)]}{suffix_text}"
+                    suffix += 1
+
+                user = User(
+                    username=unique_username,
+                    email=email,
+                    google_id=google_id,
+                    auth_provider='google',
+                    profile_picture=google_user.get('picture'),
+                    email_verified=bool(google_user.get('email_verified'))
+                )
+                db.session.add(user)
+
+        db.session.commit()
+
+        jwt_access_token = create_access_token(identity=str(user.id))
+        response = redirect(frontend_redirect_url)
+        set_access_cookies(response, jwt_access_token)
+        response.delete_cookie('google_oauth_state')
+        return response
+    except requests.RequestException as e:
+        logger.error(f"Google OAuth request failed: {e}", exc_info=True)
+        return service_unavailable_error("Google authentication service is unavailable.")
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Google OAuth callback failed: {e}", exc_info=True)
+        return internal_error("Google authentication failed.")
+
+
+@app.route('/api/v1/auth/verify', methods=['GET'])
+@jwt_required()
+def verify_auth():
+    current_user_id = get_jwt_identity()
+    user = User.query.get(current_user_id)
+    print(user)
+
+    if not user:
+        return auth_error("Invalid or expired session.")
+
+    return jsonify({"user": user.to_dict()}), 200
 
 
 @app.route('/api/v1/logout', methods=['POST'])
@@ -1244,6 +1851,75 @@ def logout():
     resp, status = success_response(message="Logout successful")
     unset_jwt_cookies(resp)
     return resp, status
+
+
+@app.route('/api/v1/auth/forgot-password', methods=['POST'])
+@csrf.exempt
+@limiter.limit("5 per minute")
+def forgot_password():
+    """Request a password reset link (always returns a generic success message)."""
+    try:
+        data = request.get_json(silent=True)
+        if data is None:
+            return invalid_json_error()
+
+        is_valid, validated_data = validate_request(ForgotPasswordRequest, data)
+        if not is_valid:
+            return jsonify(validated_data), 400
+
+        plain_token = None
+        try:
+            plain_token = request_password_reset(validated_data.email)
+        except SQLAlchemyError as e:
+            logger.error("forgot-password database error: %s", e, exc_info=True)
+
+        response_data = {"message": FORGOT_PASSWORD_MESSAGE}
+
+        if plain_token and app_config.is_development():
+            frontend_base = os.getenv(
+                'FRONTEND_ORIGIN',
+                'http://127.0.0.1:5500',
+            ).rstrip('/')
+            response_data["reset_url"] = (
+                f"{frontend_base}/pages/auth.html?token={quote(plain_token)}"
+            )
+            logger.info(
+                "Dev password reset link for %s: %s",
+                validated_data.email,
+                response_data["reset_url"],
+            )
+
+        return success_response(data=response_data)
+    except Exception as e:
+        logger.error("forgot-password failed: %s", e, exc_info=True)
+        return success_response(data={"message": FORGOT_PASSWORD_MESSAGE})
+
+
+@app.route('/api/v1/auth/reset-password', methods=['POST'])
+@csrf.exempt
+@limiter.limit("5 per minute")
+def reset_password():
+    """Set a new password using a valid reset token."""
+    try:
+        data = request.get_json(silent=True)
+        if data is None:
+            return invalid_json_error()
+
+        is_valid, validated_data = validate_request(ResetPasswordRequest, data)
+        if not is_valid:
+            return jsonify(validated_data), 400
+
+        ok, message = reset_password_with_token(
+            validated_data.token,
+            validated_data.password,
+        )
+        if not ok:
+            return jsonify({"error": message}), 400
+
+        return success_response(data={"message": message})
+    except Exception as e:
+        logger.error("reset-password failed: %s", e, exc_info=True)
+        return internal_error("Unable to reset password.")
 
 
 @app.route('/api/v1/auth/verify', methods=['GET'])
@@ -1770,6 +2446,7 @@ def delete_review(review_id):
 # ==================== PRICE ALERT ENDPOINTS ====================
 
 @app.route('/api/v1/books/<book_id>/alert', methods=['POST'])
+@limiter.limit("20 per minute")
 @jwt_required()
 def create_price_alert(book_id):
     """Create a price alert for a book (requires JWT)."""
@@ -1843,6 +2520,12 @@ def get_price_history(book_id):
         history = price_tracker.get_price_history(book_id=book.id, retailer=retailer, limit=limit)
         latest_prices = price_tracker.get_latest_prices(book.id)
         
+        # If no history exists, fetch the current price and record it
+        if not history and not latest_prices:
+            price_tracker.update_prices_for_book(book.id, book.google_books_id)
+            history = price_tracker.get_price_history(book_id=book.id, retailer=retailer, limit=limit)
+            latest_prices = price_tracker.get_latest_prices(book.id)
+        
         return jsonify({
             "book_id": book.id,
             "google_books_id": book.google_books_id,
@@ -1906,20 +2589,9 @@ def delete_price_alert(alert_id):
 with app.app_context():
     db.create_all()
 
-@app.route('/api/books', methods=['GET'])
-def get_books():
-    query = request.args.get('q')
-    max_results = request.args.get('maxResults', 10)
-
-    API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY")
-    url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults={max_results}&key={API_KEY}"
-
-    try:
-        response = requests.get(url)
-        data = response.json()
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": "Failed to fetch books"}), 500
+# NOTE: Book search is performed directly from the frontend using the Google Books API.
+# The old backend proxy endpoint /api/books has been removed to avoid unnecessary
+# load on the backend server.
 
 if __name__ == '__main__':
     server_config = app_config.server
@@ -1940,3 +2612,5 @@ if __name__ == '__main__':
         logger.info("  GET  /api/v1/health - Health check")
 
     app.run(debug=server_config.debug, port=server_config.port, host=server_config.host)
+
+
