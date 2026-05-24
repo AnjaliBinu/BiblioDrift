@@ -3,6 +3,7 @@
 
 from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required, 
     get_jwt_identity, set_access_cookies, unset_jwt_cookies
@@ -42,7 +43,7 @@ else:
 
 # Environment variables are now loaded centrally in backend/config.py
 from config import app_config, setup_logging, validate_required_env_vars
-from ai_service import generate_book_note, get_ai_recommendations, get_category_books, get_book_mood_tags_safe, generate_chat_response, llm_service, get_vibe_recommendations
+from ai_service import generate_book_note, get_ai_recommendations, get_category_books, get_book_mood_tags_safe, generate_chat_response, generate_chat_response_stream, llm_service, get_vibe_recommendations
 from models import db, User, Book, ShelfItem, BookNote, ReadingGoal, ReadingStats, Collection, CollectionItem, PriceHistory, PriceAlert, Review, register_user, login_user
 from price_tracker import get_price_tracker
 from cache_service import cache_service
@@ -223,6 +224,9 @@ CORS(
     expose_headers=['Retry-After'],
     resources={r"/api/*": {"origins": _cors_origins}},
 )
+
+# Initialize SocketIO
+socketio = SocketIO(app, cors_allowed_origins=_cors_origins)
 
 # Initialize cache service
 cache_service.init_app(app)
@@ -1100,7 +1104,15 @@ def handle_generate_note():
 @app.route('/api/v1/chat', methods=['POST'])
 @limiter.limit("10 per minute")
 def handle_chat():
-    """Handle chat messages and generate bookseller responses."""
+    """Legacy chat endpoint (deprecated in favor of WebSockets)."""
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is deprecated. Please use the WebSockets interface for Literary Chat."
+    }), 426
+
+@socketio.on('chat_message')
+def handle_socket_chat(data):
+    """Handle chat messages via WebSockets and stream bookseller responses."""
     from exceptions import (
         LLMCircuitBreakerOpenError, AIServiceException,
         ValidationException, InvalidInputError
@@ -1108,12 +1120,12 @@ def handle_chat():
     from error_responses import handle_exception
     
     try:
-        data = request.get_json()
-        
+        # Validate using existing ChatRequest rules (manual dict pass)
         is_valid, validated_data = validate_request(ChatRequest, data)
         if not is_valid:
-            return jsonify(validated_data), 400
-        
+            emit('chat_error', {"error": "Validation failed", "details": validated_data})
+            return
+            
         user_message = validated_data.message
         conversation_history = validated_data.history or []
         
@@ -1124,39 +1136,28 @@ def handle_chat():
             else:
                 validated_history.append(msg)
         
-        # Generate contextual response based on conversation history
-        response = generate_chat_response(user_message, validated_history)
-        
-        # Try to get book recommendations based on the message
+        # We need a streaming version of generate_chat_response from ai_service
+        # For now, if the streaming generator exists we use it, otherwise fallback
         recommendations = get_ai_recommendations(user_message)
         
-        # =========================================================================
-        # TIMESTAMP STANDARDIZATION
-        # =========================================================================
-        # Ensure that the timestamp returned to the client is explicitly set to
-        # UTC using timezone-aware objects. This prevents subtle bugs where server 
-        # locale or deployment environments might skew the time by relying on 
-        # naive datetime.now() calls. This is a critical fix for ensuring
-        # consistent client-side formatting regardless of geographical region.
-        # =========================================================================
+        # Start streaming back the LLM output
+        full_response = ""
+        for chunk in generate_chat_response_stream(user_message, validated_history):
+            if chunk:
+                full_response += chunk
+                emit('chat_stream', {'chunk': chunk})
         
-        return success_response(
-            data={
-                "response": response,
-                "recommendations": recommendations,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        )
+        # When generation is complete, emit the final payload with metadata
+        emit('chat_complete', {
+            "success": True,
+            "response": full_response,
+            "recommendations": recommendations,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
         
-    except (LLMCircuitBreakerOpenError, AIServiceException) as e:
-        logger.error(f"AI service error in handle_chat: {e}", exc_info=True)
-        return handle_exception(e, "handle_chat")
-    except (ValidationException, InvalidInputError) as e:
-        logger.warning(f"Validation error in handle_chat: {e}")
-        return handle_exception(e, "handle_chat")
     except Exception as e:
-        logger.error(f"Unexpected error in handle_chat: {type(e).__name__}: {e}", exc_info=True)
-        return handle_exception(e, "handle_chat")
+        logger.error(f"Error in WebSocket handle_chat: {type(e).__name__}: {e}", exc_info=True)
+        emit('chat_error', {"error": "An error occurred while generating a response. Please try again."})
 
 @app.route('/api/v1/health', methods=['GET'])
 def health_check():
@@ -2611,6 +2612,6 @@ if __name__ == '__main__':
         logger.info("  POST /api/v1/chat - Chat with bookseller")
         logger.info("  GET  /api/v1/health - Health check")
 
-    app.run(debug=server_config.debug, port=server_config.port, host=server_config.host)
+    socketio.run(app, debug=server_config.debug, port=server_config.port, host=server_config.host)
 
 
