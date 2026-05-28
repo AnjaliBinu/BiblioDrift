@@ -35,6 +35,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 
+    <!-- Core Styles -->
+    <link rel="stylesheet" href="../css/style.css" />
+    <link rel="stylesheet" href="../css/style-responsive.css" />
+    <link rel="stylesheet" href="../css/keyboard-shortcuts.css" />
+
     <link
       href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
@@ -81,87 +86,6 @@
         height: 4px;
         background: #8b5cf6;
         z-index: 9999;
-      }
-
-      .main-header {
-        position: sticky;
-        top: 0;
-        z-index: 1000;
-        backdrop-filter: blur(16px);
-        background: rgba(15, 17, 23, 0.85);
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 1rem 2rem;
-      }
-
-      .logo {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        color: white;
-        text-decoration: none;
-        font-size: 1.3rem;
-        font-weight: 600;
-      }
-
-      .logo img {
-        width: 42px;
-        height: 42px;
-        border-radius: 12px;
-      }
-
-      .header-controls {
-        display: flex;
-        align-items: center;
-        gap: 1.5rem;
-      }
-
-      .nav-links {
-        display: flex;
-        gap: 1rem;
-        align-items: center;
-      }
-
-      .nav-links a {
-        color: rgba(255, 255, 255, 0.8);
-        text-decoration: none;
-        font-weight: 500;
-        transition: all 0.3s ease;
-        padding: 8px 14px;
-        border-radius: 12px;
-      }
-
-      .nav-links a:hover {
-        background: rgba(255, 255, 255, 0.08);
-        color: white;
-      }
-
-      .search-input {
-        padding: 12px 18px;
-        border-radius: 14px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        background: rgba(255, 255, 255, 0.05);
-        color: white;
-        width: 240px;
-        outline: none;
-      }
-
-      .btn-icon {
-        border: none;
-        background: rgba(255, 255, 255, 0.08);
-        color: white;
-        width: 46px;
-        height: 46px;
-        border-radius: 14px;
-        cursor: pointer;
-        transition: all 0.3s ease;
-      }
-
-      .btn-icon:hover {
-        transform: translateY(-2px);
-        background: rgba(255, 255, 255, 0.15);
       }
 
       .breadcrumb {
@@ -411,27 +335,7 @@
       }
 
       @media (max-width: 768px) {
-        .main-header {
-          flex-direction: column;
-          gap: 1rem;
-          padding: 1rem;
-        }
-
-        .header-controls {
-          flex-direction: column;
-          width: 100%;
-        }
-
-        .search-input {
-          width: 100%;
-        }
-
-        .nav-links {
-          flex-wrap: wrap;
-          justify-content: center;
-        }
-
-        .privacy-hero {
+                .privacy-hero {
           padding-top: 3rem;
         }
 
